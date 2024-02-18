@@ -4,52 +4,21 @@ import matplotlib.pyplot as plt
 import mplfinance as mpf
 import yfinance as yf
 from matplotlib.backends.backend_pdf import PdfPages
-import  streamlit as st
+import streamlit as st
 import base64
 import os
-def analyze_symbol(symbol_name: str, lookback=30, start=None, end=None):
-    data = yf.download(symbol_name, start, end)
+def fit_trendlines_high_low(high: np.array, low: np.array, close: np.array):
+    x = np.arange(len(close))
+    coefs = np.polyfit(x, close, 1)
+    # coefs[0] = slope,  coefs[1] = intercept
+    line_points = coefs[0] * x + coefs[1]
+    upper_pivot = (high - line_points).argmax() 
+    lower_pivot = (low - line_points).argmin() 
+    
+    support_coefs = optimize_slope(True, lower_pivot, coefs[0], low)
+    resist_coefs = optimize_slope(False, upper_pivot, coefs[0], high)
 
-    support_slope = [np.nan] * len(data)
-    resist_slope = [np.nan] * len(data)
-    for i in range(lookback - 1, len(data)):
-        candles = data.iloc[i - lookback + 1: i + 1]
-        support_coefs, resist_coefs = fit_trendlines_high_low(candles['High'], candles['Low'], candles['Close'])
-        support_slope[i] = support_coefs[0]
-        resist_slope[i] = resist_coefs[0]
-
-    data['support_slope'] = support_slope
-    data['resist_slope'] = resist_slope
-
-    candles = data.iloc[-30:] # Last 30 candles in data
-    support_coefs_c, resist_coefs_c = fit_trendlines_single(candles['Close'])
-    support_coefs, resist_coefs = fit_trendlines_high_low(candles['High'], candles['Low'], candles['Close'])
-
-    support_line_c = support_coefs_c[0] * np.arange(len(candles)) + support_coefs_c[1]
-    resist_line_c = resist_coefs_c[0] * np.arange(len(candles)) + resist_coefs_c[1]
-
-    support_line = support_coefs[0] * np.arange(len(candles)) + support_coefs[1]
-    resist_line = resist_coefs[0] * np.arange(len(candles)) + resist_coefs[1]
-
-    plt.style.use('dark_background')
-    ax = plt.gca()
-
-    def get_line_points(candles, line_points):
-        idx = candles.index
-        line_i = len(candles) - len(line_points)
-        assert(line_i >= 0)
-        points = []
-        for i in range(line_i, len(candles)):
-            points.append((idx[i], line_points[i - line_i]))
-        return points
-
-    s_seq = get_line_points(candles, support_line)
-    r_seq = get_line_points(candles, resist_line)
-    s_seq2 = get_line_points(candles, support_line_c)
-    r_seq2 = get_line_points(candles, resist_line_c)
-    mpf.plot(candles, alines=dict(alines=[s_seq, r_seq, s_seq2, r_seq2], colors=['w', 'w', 'b', 'b']), type='candle', style='charles', ax=ax)
-
-    return ax
+    return (support_coefs, resist_coefs)
 def check_trend_line(support: bool, pivot: int, slope: float, y: np.array):
     # compute sum of differences between line and prices, 
     # return negative val if invalid 
@@ -150,18 +119,56 @@ def fit_trendlines_single(data: np.array):
 
 
 
-def fit_trendlines_high_low(high: np.array, low: np.array, close: np.array):
-    x = np.arange(len(close))
-    coefs = np.polyfit(x, close, 1)
-    # coefs[0] = slope,  coefs[1] = intercept
-    line_points = coefs[0] * x + coefs[1]
-    upper_pivot = (high - line_points).argmax() 
-    lower_pivot = (low - line_points).argmin() 
-    
-    support_coefs = optimize_slope(True, lower_pivot, coefs[0], low)
-    resist_coefs = optimize_slope(False, upper_pivot, coefs[0], high)
 
-    return (support_coefs, resist_coefs)
+
+def analyze_symbol(symbol_name: str,  lookback=30, start=None, end=None, interval='1d'):
+    data = yf.download(symbol_name, start=start, end=end, interval=interval)
+    if data.empty:
+        raise ValueError("No data available for the specified symbol and date range.")
+    support_slope = [np.nan] * len(data)
+    resist_slope = [np.nan] * len(data)
+    for i in range(lookback - 1, len(data)):
+        candles = data.iloc[i - lookback + 1: i + 1]
+        support_coefs, resist_coefs = fit_trendlines_high_low(candles['High'], candles['Low'], candles['Close'])
+        support_slope[i] = support_coefs[0]
+        resist_slope[i] = resist_coefs[0]
+
+    data['support_slope'] = support_slope
+    data['resist_slope'] = resist_slope
+
+    candles = data.iloc[-lookback:] # Last 30 candles in data
+    support_coefs_c, resist_coefs_c = fit_trendlines_single(candles['Close'])
+    support_coefs, resist_coefs = fit_trendlines_high_low(candles['High'], candles['Low'], candles['Close'])
+
+    support_line_c = support_coefs_c[0] * np.arange(len(candles)) + support_coefs_c[1]
+    resist_line_c = resist_coefs_c[0] * np.arange(len(candles)) + resist_coefs_c[1]
+
+    support_line = support_coefs[0] * np.arange(len(candles)) + support_coefs[1]
+    resist_line = resist_coefs[0] * np.arange(len(candles)) + resist_coefs[1]
+
+    plt.style.use('dark_background')
+    ax = plt.gca()
+
+    def get_line_points(candles, line_points):
+        idx = candles.index
+        line_i = len(candles) - len(line_points)
+        assert(line_i >= 0)
+        points = []
+        for i in range(line_i, len(candles)):
+            points.append((idx[i], line_points[i - line_i]))
+        return points
+
+    s_seq = get_line_points(candles, support_line)
+    r_seq = get_line_points(candles, resist_line)
+    s_seq2 = get_line_points(candles, support_line_c)
+    r_seq2 = get_line_points(candles, resist_line_c)
+    mpf.plot(candles, alines=dict(alines=[s_seq, r_seq, s_seq2, r_seq2], colors=['w', 'w', 'b', 'b']), type='candle', style='charles', ax=ax)
+
+    return ax
+
+# Function definitions for fitting trendlines and optimizing slope remain unchanged
+
+# Streamlit app UI
 st.title("Symbol Analysis PDF Generator")
 
 # File uploader for symbol list
@@ -177,15 +184,19 @@ if file_uploaded is not None:
     start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2023-01-01"))
     end_date = st.sidebar.date_input("End Date", pd.to_datetime("2024-01-01"))
 
+    # Interval selection
+    interval_options = ['1m', '2m', '5m', '15m', '30m', '1h', '1d']  # Add more if needed
+    interval = st.sidebar.selectbox("Interval", interval_options)
+
     # Loopback selection
-    look_back = st.sidebar.number_input("Loopback Period", min_value=1, max_value=365, value=30)
+    lookback = st.sidebar.number_input("Loopback Period", min_value=1, max_value=365, value=30)
 
     # Generate PDF button
     if st.sidebar.button("Generate PDF"):
         with PdfPages('symbols_analysis.pdf') as pdf:
             for symbol in symbols_list:
                 fig, ax = plt.subplots()
-                ax = analyze_symbol(symbol+'.ns', start=start_date, end=end_date)
+                ax = analyze_symbol(symbol+'.ns',lookback=lookback, start=start_date, end=end_date, interval=interval)
                 plt.title(symbol)
                 pdf.savefig(fig)
                 plt.close()
